@@ -14,8 +14,8 @@ struct ContentView: View {
     }
 
     // Define the range of BPMs for the slider based on your samples
-    private let minBPM: Double = 80.0
-    private let maxBPM: Double = 108.0
+    private let minBPM: Double = 60.0
+    private let maxBPM: Double = 120.0
 
     var body: some View {
         NavigationView {
