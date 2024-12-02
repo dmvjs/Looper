@@ -3,6 +3,7 @@ import SwiftUI
 struct ContentView: View {
     @ObservedObject var audioManager = AudioManager.shared
     @State private var sampleVolumes: [Int: Float] = [:]
+    @State private var nowPlaying: [Sample] = []
 
     // Group samples by BPM and Key, sorted by tempo and key
     private var groupedSamples: [(Double, [(Int, [Sample])])] {
@@ -22,6 +23,7 @@ struct ContentView: View {
             VStack(spacing: 0) {
                 // Pitch Slider and Tempo Display
                 VStack(spacing: 10) {
+                    Spacer().frame(height: 40)
                     HStack {
                         Text(String(format: "%.1f BPM", audioManager.bpm))
                             .font(.system(size: 32, weight: .bold))
@@ -49,6 +51,7 @@ struct ContentView: View {
                                 Rectangle()
                                     .fill(Color.gray)
                                     .frame(height: 2) // Center line
+                                    .padding(.horizontal, 16) // Add padding to prevent bleed to edge
                             )
 
                         // Slider with notches
@@ -86,6 +89,9 @@ struct ContentView: View {
                                                 audioManager.setVolume(for: sample, volume: newVolume)
                                             }
                                             .padding(.horizontal)
+                                            .onTapGesture {
+                                                addToNowPlaying(sample: sample)
+                                            }
                                         }
                                     }
                                 }
@@ -96,6 +102,47 @@ struct ContentView: View {
                 }
                 .background(LinearGradient(gradient: Gradient(colors: [Color.black, Color.gray]), startPoint: .top, endPoint: .bottom))
                 .edgesIgnoringSafeArea(.bottom)
+
+                // Now Playing View
+                if !nowPlaying.isEmpty {
+                    VStack(spacing: 10) {
+                        HStack {
+                            Text("Now Playing")
+                                .font(.headline)
+                                .foregroundColor(.white)
+                            Spacer()
+                        }
+                        .padding(.horizontal)
+
+                        ForEach(nowPlaying, id: \.id) { sample in
+                            HStack {
+                                VStack(alignment: .leading) {
+                                    Text(sample.title)
+                                        .font(.subheadline)
+                                        .foregroundColor(.white)
+                                    Text(sample.artist)
+                                        .font(.caption)
+                                        .foregroundColor(.white.opacity(0.7))
+                                }
+                                Spacer()
+                                Slider(value: Binding(
+                                    get: { sampleVolumes[sample.id] ?? 0.5 },
+                                    set: { newValue in
+                                        sampleVolumes[sample.id] = newValue
+                                        audioManager.setVolume(for: sample, volume: newValue)
+                                    }
+                                ), in: 0...1)
+                                    .accentColor(.white)
+                                    .frame(width: 100)
+                            }
+                            .padding()
+                            .background(Color.black.opacity(0.6))
+                            .cornerRadius(10)
+                        }
+                    }
+                    .padding()
+                    .background(Color.black.opacity(0.9))
+                }
             }
             .background(Color.black)
             .edgesIgnoringSafeArea(.all)
@@ -113,54 +160,10 @@ struct ContentView: View {
         let colors: [Color] = [.red, .orange, .yellow, .green, .blue, .indigo, .purple, .pink, .teal, .cyan, .mint, .gray]
         return colors[(key - 1) % colors.count]
     }
-}
 
-struct SampleRecordView: View {
-    let sample: Sample
-    @State var volume: Float
-    let onVolumeChange: (Float) -> Void
-
-    var body: some View {
-        VStack {
-            HStack {
-                Image(systemName: "opticaldisc")
-                    .resizable()
-                    .frame(width: 50, height: 50)
-                    .foregroundColor(.white)
-
-                VStack(alignment: .leading) {
-                    Text(sample.title)
-                        .font(.headline)
-                        .foregroundColor(.white)
-                    Text(sample.artist)
-                        .font(.subheadline)
-                        .foregroundColor(.white.opacity(0.7))
-                }
-                Spacer()
-                Text("\(Int(sample.bpm)) BPM")
-                    .font(.subheadline)
-                    .foregroundColor(.white)
-            }
-            .padding()
-            .background(Color.black.opacity(0.6))
-            .cornerRadius(10)
-
-            HStack {
-                Text("Volume")
-                    .foregroundColor(.white)
-                Slider(value: Binding(
-                    get: { self.volume },
-                    set: { newValue in
-                        self.volume = newValue
-                        self.onVolumeChange(newValue)
-                    }
-                ), in: 0...1)
-            }
-            .padding([.leading, .trailing, .bottom])
+    private func addToNowPlaying(sample: Sample) {
+        if nowPlaying.count < 4 && !nowPlaying.contains(where: { $0.id == sample.id }) {
+            nowPlaying.append(sample)
         }
-        .background(Color.black.opacity(0.5))
-        .cornerRadius(10)
-        .padding(.vertical, 5)
     }
 }
-
