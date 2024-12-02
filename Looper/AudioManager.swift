@@ -11,6 +11,7 @@ class AudioManager: ObservableObject {
     private var varispeedNodes: [Int: AVAudioUnitVarispeed] = [:]
     private var timePitchNodes: [Int: AVAudioUnitTimePitch] = [:]
     private var buffers: [Int: AVAudioPCMBuffer] = [:]
+    private var referenceStartTime: AVAudioTime?
     
     @Published var bpm: Double = 94.0 {
         didSet {
@@ -26,6 +27,8 @@ class AudioManager: ObservableObject {
     
     private init() {
         setupAudioSession()
+        setupEngineNodes()
+        startEngine()
     }
     
     private func setupAudioSession() {
@@ -38,92 +41,118 @@ class AudioManager: ObservableObject {
         }
     }
     
-    func loadSamples(_ samples: [Sample]) {
-        // Create a common start time in the future
-        let startDelay: TimeInterval = 1.0 // Start after 1 second
-        
-        // Get the current host time
-        let nowHostTime = mach_absolute_time()
-        
-        // Convert delay from seconds to host time units
-        let delayInHostTime = secondsToHostTime(startDelay)
-        let startHostTime = nowHostTime + delayInHostTime
-        
-        // Create an AVAudioTime with the future host time
-        let startTime = AVAudioTime(hostTime: startHostTime)
-        
-        // Attach and connect all nodes
-        for sample in samples {
-            let player = AVAudioPlayerNode()
-            let mixer = AVAudioMixerNode()
-            let varispeed = AVAudioUnitVarispeed()
-            let timePitch = AVAudioUnitTimePitch()
-            
-            engine.attach(player)
-            engine.attach(varispeed)
-            engine.attach(timePitch)
-            engine.attach(mixer)
-            
-            let fileName = sample.fileName.replacingOccurrences(of: "-body.wav", with: "")
-            
-            guard let url = Bundle.main.url(forResource: fileName, withExtension: "wav") else {
-                print("Could not find file \(sample.fileName)")
-                continue
-            }
-            
-            do {
-                let file = try AVAudioFile(forReading: url)
-                
-                // Read the entire file into a buffer
-                let processingFormat = file.processingFormat
-                let frameCount = AVAudioFrameCount(file.length)
-                guard let buffer = AVAudioPCMBuffer(pcmFormat: processingFormat, frameCapacity: frameCount) else { continue }
-                try file.read(into: buffer)
-                buffers[sample.id] = buffer
-                
-                // Connect nodes
-                engine.connect(player, to: varispeed, format: processingFormat)
-                engine.connect(varispeed, to: timePitch, format: processingFormat)
-                engine.connect(timePitch, to: mixer, format: processingFormat)
-                engine.connect(mixer, to: engine.mainMixerNode, format: processingFormat)
-                
-                players[sample.id] = player
-                mixers[sample.id] = mixer
-                varispeedNodes[sample.id] = varispeed
-                timePitchNodes[sample.id] = timePitch
-                
-                // Adjust playback rates
-                adjustPlaybackRates(for: sample)
-                
-                // Set initial volume to 0 (mute)
-                mixer.outputVolume = 0.0
-            } catch {
-                print("Error loading audio file: \(error.localizedDescription)")
-            }
-        }
-        
-        // Connect the main mixer node to the output node
-        engine.connect(engine.mainMixerNode, to: engine.outputNode, format: nil)
-        
-        // Prepare and start the engine after setting up all nodes
-        engine.prepare()
+    private func setupEngineNodes() {
+        // Attach the main output node if necessary
+        let mainMixer = engine.mainMixerNode
+        engine.connect(mainMixer, to: engine.outputNode, format: nil)
+    }
+    
+    private func startEngine() {
         do {
             try engine.start()
         } catch {
             print("Error starting audio engine: \(error.localizedDescription)")
         }
+    }
+    
+    func addSampleToPlay(_ sample: Sample) {
+        let player = AVAudioPlayerNode()
+        let mixer = AVAudioMixerNode()
+        let varispeed = AVAudioUnitVarispeed()
+        let timePitch = AVAudioUnitTimePitch()
         
-        // Schedule buffers and start players
-        for sample in samples {
-            guard let player = players[sample.id],
-                  let buffer = buffers[sample.id] else { continue }
-            
-            // Schedule buffer
-            player.scheduleBuffer(buffer, at: startTime, options: .loops, completionHandler: nil)
-            
-            // Start the player
-            player.play(at: startTime)
+        engine.attach(player)
+        engine.attach(varispeed)
+        engine.attach(timePitch)
+        engine.attach(mixer)
+        
+        guard let url = Bundle.main.url(forResource: sample.fileName, withExtension: "wav") else {
+            print("Could not find file \(sample.fileName)")
+            return
         }
+        
+        do {
+            let file = try AVAudioFile(forReading: url)
+            
+            // Read the entire file into a buffer
+            let processingFormat = file.processingFormat
+            let frameCount = AVAudioFrameCount(file.length)
+            guard let buffer = AVAudioPCMBuffer(pcmFormat: processingFormat, frameCapacity: frameCount) else { return }
+            try file.read(into: buffer)
+            buffers[sample.id] = buffer
+            
+            // Connect nodes
+            engine.connect(player, to: varispeed, format: processingFormat)
+            engine.connect(varispeed, to: timePitch, format: processingFormat)
+            engine.connect(timePitch, to: mixer, format: processingFormat)
+            engine.connect(mixer, to: engine.mainMixerNode, format: processingFormat)
+            
+            players[sample.id] = player
+            mixers[sample.id] = mixer
+            varispeedNodes[sample.id] = varispeed
+            timePitchNodes[sample.id] = timePitch
+            
+            // Adjust playback rates
+            adjustPlaybackRates(for: sample)
+            
+            // Set initial volume to 0 (mute)
+            mixer.outputVolume = 0.0
+            
+            // Set a reference start time if it hasn't been set
+            if referenceStartTime == nil {
+                referenceStartTime = AVAudioTime(hostTime: mach_absolute_time() + secondsToHostTime(1.0)) // Start after 1 second delay
+            }
+            
+            // Stop all players, reschedule buffers, and restart to maintain phase alignment
+            stopAllPlayers()
+            players[sample.id] = player
+            scheduleAllPlayers()
+        } catch {
+            print("Error loading audio file: \(error.localizedDescription)")
+        }
+    }
+    
+    private func stopAllPlayers() {
+        for player in players.values {
+            player.stop()
+        }
+    }
+    
+    private func scheduleAllPlayers() {
+        guard let startTime = referenceStartTime else { return }
+        for (sampleId, player) in players {
+            if let buffer = buffers[sampleId] {
+                player.scheduleBuffer(buffer, at: startTime, options: .loops, completionHandler: nil)
+                player.play(at: startTime)
+            }
+        }
+    }
+    
+    func removeSampleFromPlay(_ sample: Sample) {
+        guard let player = players[sample.id] else { return }
+
+        player.stop()
+        engine.detach(player)
+        
+        if let mixer = mixers[sample.id] {
+            engine.detach(mixer)
+        }
+        if let varispeed = varispeedNodes[sample.id] {
+            engine.detach(varispeed)
+        }
+        if let timePitch = timePitchNodes[sample.id] {
+            engine.detach(timePitch)
+        }
+        
+        players.removeValue(forKey: sample.id)
+        mixers.removeValue(forKey: sample.id)
+        varispeedNodes.removeValue(forKey: sample.id)
+        timePitchNodes.removeValue(forKey: sample.id)
+        buffers.removeValue(forKey: sample.id)
+        
+        // Reschedule remaining players to maintain phase alignment
+        stopAllPlayers()
+        scheduleAllPlayers()
     }
     
     func setVolume(for sample: Sample, volume: Float) {
@@ -132,8 +161,10 @@ class AudioManager: ObservableObject {
     }
     
     private func adjustPlaybackRates() {
-        for sample in samples {
-            adjustPlaybackRates(for: sample)
+        for sampleId in players.keys {
+            if let sample = samples.first(where: { $0.id == sampleId }) {
+                adjustPlaybackRates(for: sample)
+            }
         }
     }
     
